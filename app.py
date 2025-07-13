@@ -18,6 +18,20 @@ def load_data() -> pd.DataFrame:
     df.dropna(subset=["Impact", "Tech_Count"], inplace=True)
     return df
 
+
+# -----------------------------------------------------------------------
+# Additional dataset – used for per-technology selection table
+# -----------------------------------------------------------------------
+
+@st.cache_data(show_spinner=False)
+def load_separated_data() -> pd.DataFrame:
+    """Load the separated technologies CSV (contains individual Technology_Name rows)."""
+    csv_path = Path(__file__).parent / "emerging_technologies_separated.csv"
+    return pd.read_csv(csv_path)
+
+
+sep_df = load_separated_data()
+
 df = load_data()
 
 st.title("🕸️ Ecosystem Analyzer")
@@ -26,8 +40,34 @@ st.title("🕸️ Ecosystem Analyzer")
 with st.sidebar:
     st.header("Filter Settings")
 
-    # OECD Research Area filter
+    # OECD Research Area filter with color mapping
     oecd_areas = sorted(df["OECD_Research_Area"].unique())
+    
+    # Create color mapping for each research area
+    color_palette = [
+        "#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd", 
+        "#8c564b", "#e377c2", "#7f7f7f", "#bcbd22", "#17becf",
+        "#aec7e8", "#ffbb78", "#98df8a", "#ff9896", "#c5b0d5",
+        "#c49c94", "#f7b6d3", "#c7c7c7", "#dbdb8d", "#9edae5"
+    ]
+    
+    area_color_map = {area: color_palette[i % len(color_palette)] for i, area in enumerate(oecd_areas)}
+    
+    # Generate CSS to color the selected items in multiselect
+    css_rules = []
+    for area in oecd_areas:
+        color = area_color_map[area]
+        # Create CSS rule for each area to color its selection tag
+        css_rules.append(f"""
+        div[data-testid="stMultiSelect"] span[title="{area}"] {{
+            background-color: {color} !important;
+        }}
+        """)
+    
+    # Apply the CSS
+    st.markdown(f"<style>{''.join(css_rules)}</style>", unsafe_allow_html=True)
+    
+    # Regular multiselect without colored squares
     selected_areas = st.multiselect("Research Area (OECD)", options=oecd_areas, default=[])
 
     # Year range filter (use the discrete ranges present)
@@ -97,6 +137,10 @@ filtered_df["theta_deg"] = filtered_df["TRLxAdoption"].apply(
 )
 
 # Polar scatter plot with reversed radial axis (Impact 100 -> center)
+# Create color mapping for the filtered data
+unique_areas_in_filtered = filtered_df["OECD_Research_Area"].unique()
+color_sequence = [area_color_map[area] for area in unique_areas_in_filtered]
+
 fig = px.scatter_polar(
     filtered_df,
     r="Impact",
@@ -105,7 +149,7 @@ fig = px.scatter_polar(
     size="Tech_Count",
     # hover_name="Technology_Name",
     size_max=40,
-    color_discrete_sequence=px.colors.qualitative.Safe,
+    color_discrete_sequence=color_sequence,
 )
 
 # Enable selection on the chart
@@ -120,9 +164,12 @@ fig.update_layout(
             tickmode="array",
             tickvals=list(angle_map.values()),
             ticktext=list(angle_map.keys()),
+            tickfont=dict(size=14)  # Increased font size for angular axis labels
         ),
     ),
     legend_title_text="OECD Research Area",
+    legend_title_font_size=14,  # Increased legend title font size
+    legend_font_size=12,  # Increased legend item font size
     margin=dict(l=40, r=40, t=40, b=40),
     height=850,
 )
@@ -139,16 +186,16 @@ selected_points = plotly_events(
     key="ecosystem_plot",
 )
 
-st.subheader("Results")
-
 # Filter results based on selected points
-results_df = filtered_df[["Technology_Name", "OECD_Research_Area", "Year_Range", "TRLxAdoption", "Impact", "Tech_Count"]].copy()
+results_df = filtered_df[["OECD_Research_Area", "Year_Range", "TRLxAdoption", "Impact", "Tech_Count"]].copy()  # "Technology_Name",
 
 # Initialize session state for tracking selections
 if "last_selected" not in st.session_state:
     st.session_state.last_selected = None
 if "show_selected" not in st.session_state:
     st.session_state.show_selected = False
+if "persisted_selected_indices" not in st.session_state:
+    st.session_state.persisted_selected_indices = []
 
 # Get the actual row indices from the plotly selection
 selected_indices = []
@@ -179,29 +226,93 @@ if current_selection:
     if st.session_state.last_selected == current_selection:
         # Same selection clicked again - toggle off
         st.session_state.show_selected = not st.session_state.show_selected
+        if not st.session_state.show_selected:
+            st.session_state.persisted_selected_indices = []
+        else:
+            st.session_state.persisted_selected_indices = selected_indices
     else:
         # New selection - show it
         st.session_state.show_selected = True
         st.session_state.last_selected = current_selection
+        st.session_state.persisted_selected_indices = selected_indices
 else:
-    # No selection from plot
-    st.session_state.show_selected = False
-    st.session_state.last_selected = None
+    # No selection from plot - but check if we should persist previous selection
+    if not st.session_state.persisted_selected_indices:
+        st.session_state.show_selected = False
+        st.session_state.last_selected = None
 
-# Determine what to show in the table
-if st.session_state.show_selected and selected_indices:
-    # Use the exact selected rows
-    results_df = filtered_df.loc[selected_indices, ["Technology_Name", "OECD_Research_Area", "Year_Range", "TRLxAdoption", "Impact", "Tech_Count"]]
-    st.info(f"Showing {len(selected_indices)} selected technologies. Click again to clear or select others.")
+# Use persisted indices if available, otherwise use current selection
+display_indices = st.session_state.persisted_selected_indices if st.session_state.persisted_selected_indices else selected_indices
+
+# Show results only when bubbles are selected
+if st.session_state.show_selected and display_indices:
+    st.subheader("Results")
+    # Use the exact selected rows - ensure indices are valid
+    valid_indices = [idx for idx in display_indices if idx in filtered_df.index]
+    results_df = filtered_df.loc[
+        valid_indices,
+        ["OECD_Research_Area", "Year_Range", "TRLxAdoption", "Impact", "Tech_Count"],
+    ]  # "Technology_Name",
+    st.info(
+        f"Showing {len(valid_indices)} selected technologies. Click again to clear or select others."
+    )
+    st.dataframe(
+        results_df.sort_values("Impact").reset_index(drop=True),
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    # ---------------------------------------------------------------
+    # Build the per-technology table by matching attributes for each
+    # selected bubble, then show only the Technology_Name column with
+    # a checkbox on the left.
+    # ---------------------------------------------------------------
+
+    # Collect attribute combinations for the selected bubbles
+    bubble_attrs = filtered_df.loc[
+        valid_indices, [
+            "OECD_Research_Area",
+            "Year_Range",
+            "Tech_Level",
+            "TRLxAdoption",
+        ]
+    ]
+
+    # Create a mask for rows in sep_df that match ANY of the selected attribute sets
+    mask = pd.Series(False, index=sep_df.index)
+    for _, row in bubble_attrs.iterrows():
+        cond = (
+            (sep_df["OECD_Research_Area"] == row["OECD_Research_Area"]) &
+            (sep_df["Year_Range"] == row["Year_Range"]) &
+            (sep_df["Tech_Level"] == row["Tech_Level"]) &
+            (sep_df["TRLxAdoption"] == row["TRLxAdoption"])
+        )
+        mask |= cond
+
+    tech_df = sep_df.loc[mask, ["Technology_Name"]].drop_duplicates().reset_index(drop=True)
+
+    # Prepend a checkbox column (default unchecked)
+    tech_df.insert(0, "Select", False)
+
+    if not tech_df.empty:
+        st.subheader("Technologies")
+        edited_tech_df = st.data_editor(
+            tech_df,
+            use_container_width=False,
+            hide_index=True,
+            key="tech_selector",
+            disabled=["Technology_Name"],
+            on_change=None,
+            column_config={
+                "Select": st.column_config.CheckboxColumn(required=False),
+                "Technology_Name": st.column_config.TextColumn(width="medium")
+            },
+        )
+        
+        # Generate Report button (doesn't trigger anything)
+        if st.button("Generate Report", key="generate_report", type="primary"):
+            pass  # Button doesn't do anything yet
 else:
-    # Show all filtered results
-    results_df = filtered_df[["Technology_Name", "OECD_Research_Area", "Year_Range", "TRLxAdoption", "Impact", "Tech_Count"]]
-    st.info("Click on chart bubbles to select specific technologies, or view all results below.")
-
-st.dataframe(
-    results_df.sort_values("Impact").reset_index(drop=True),
-    use_container_width=True,
-    hide_index=True,
-)
+    st.info("Click on chart bubbles to select specific technologies.")
 
 
