@@ -8,6 +8,80 @@ from streamlit_plotly_events import plotly_events  # NEW
 
 st.set_page_config(page_title="Ecosystem Analyzer", layout="wide")
 
+# Technology descriptions for tooltips
+TECH_DESCRIPTIONS = {
+    "Artificial muscle": "Artificial muscles are synthetic materials that convert energy into mechanical work by mimicking biological muscle contraction. They provide flexible, lightweight alternatives to rigid actuators with superior power-to-weight ratios, silent operation, and biocompatibility, making them ideal for soft robotics and applications where traditional motors are impractical.",
+    "AI protein Structure Prediction": "Advanced computational methods that predict protein folding patterns from amino acid sequences using artificial intelligence, revolutionizing drug discovery and biological research.",
+    "Acoustic piezoelectric response": "Technology that converts mechanical stress into electrical energy through piezoelectric materials, enabling energy harvesting from sound and vibrations.",
+    "Adaptive Sensing System": "Intelligent sensor networks that can dynamically adjust their parameters and behavior based on environmental conditions and data patterns.",
+    "Application-Specific Compression": "Specialized data compression techniques optimized for specific use cases, providing better performance than general-purpose compression algorithms.",
+    "Aptamer engineering": "Design and modification of short DNA or RNA molecules that bind specifically to target molecules, useful in diagnostics and therapeutics.",
+    "Attention-directing augmented reality": "AR systems that guide user focus to specific objects or areas in their environment, enhancing situational awareness and task performance.",
+    "Circular Economy Blue Enzyme Energy System": "The Circular Economy Blue Enzyme Energy System uses specialized 'blue' enzymes to convert organic waste into clean energy through a closed-loop process. This biotechnology efficiently breaks down waste into biofuels without harmful emissions while recapturing nutrients and water for reuse, achieving carbon-neutral energy production and true circularity.",
+    # Add more descriptions as needed
+}
+
+# CSS for tooltips
+tooltip_css = """
+<style>
+/* Tooltip container */
+.tooltip {
+    position: relative;
+    display: inline-block;
+    cursor: help;
+}
+
+/* Tooltip text */
+.tooltip .tooltiptext {
+    visibility: hidden;
+    width: 400px;
+    background-color: #555;
+    color: white;
+    text-align: left;
+    border-radius: 6px;
+    padding: 10px;
+    position: absolute;
+    z-index: 1000;
+    bottom: 125%;
+    left: 50%;
+    margin-left: -200px;
+    opacity: 0;
+    transition: opacity 0.3s;
+    font-size: 14px;
+    line-height: 1.4;
+    box-shadow: 0px 2px 8px rgba(0,0,0,0.3);
+}
+
+/* Tooltip arrow */
+.tooltip .tooltiptext::after {
+    content: "";
+    position: absolute;
+    top: 100%;
+    left: 50%;
+    margin-left: -5px;
+    border-width: 5px;
+    border-style: solid;
+    border-color: #555 transparent transparent transparent;
+}
+
+/* Show tooltip on hover */
+.tooltip:hover .tooltiptext {
+    visibility: visible;
+    opacity: 1;
+}
+
+/* Responsive tooltip positioning */
+@media screen and (max-width: 800px) {
+    .tooltip .tooltiptext {
+        width: 300px;
+        margin-left: -150px;
+    }
+}
+</style>
+"""
+
+st.markdown(tooltip_css, unsafe_allow_html=True)
+
 @st.cache_data(show_spinner=False)
 def load_data() -> pd.DataFrame:
     csv_path = Path(__file__).parent / "emerging_technologies_processed.csv"
@@ -29,6 +103,16 @@ def load_separated_data() -> pd.DataFrame:
     csv_path = Path(__file__).parent / "emerging_technologies_separated.csv"
     return pd.read_csv(csv_path)
 
+
+def create_tooltip_html(tech_name: str) -> str:
+    """Create HTML with tooltip for technology name."""
+    description = TECH_DESCRIPTIONS.get(tech_name, "No description available for this technology.")
+    return f'''
+    <div class="tooltip">
+        {tech_name}
+        <span class="tooltiptext">{description}</span>
+    </div>
+    '''
 
 sep_df = load_separated_data()
 
@@ -67,8 +151,51 @@ with st.sidebar:
     # Apply the CSS
     st.markdown(f"<style>{''.join(css_rules)}</style>", unsafe_allow_html=True)
     
-    # Regular multiselect without colored squares
-    selected_areas = st.multiselect("Research Area (OECD)", options=oecd_areas, default=[])
+    # Initialize session state for select all checkbox
+    if 'select_all_areas' not in st.session_state:
+        st.session_state.select_all_areas = False
+    if 'previous_selected_areas' not in st.session_state:
+        st.session_state.previous_selected_areas = []
+    
+    # Create columns for label and select all checkbox
+    col1, col2 = st.columns([3, 1])
+    
+    with col1:
+        st.write("**Research Area (OECD)**")
+    
+    with col2:
+        select_all = st.checkbox("All", key="select_all_oecd", help="Select/deselect all research areas")
+    
+    # Handle Select All logic
+    if select_all != st.session_state.select_all_areas:
+        st.session_state.select_all_areas = select_all
+        if select_all:
+            # Store current selection before selecting all
+            st.session_state.previous_selected_areas = st.session_state.get('selected_areas_multiselect', [])
+            default_areas = oecd_areas
+        else:
+            # Restore previous selection when unchecking select all
+            default_areas = st.session_state.previous_selected_areas
+    else:
+        # Use current selection or empty list
+        default_areas = st.session_state.get('selected_areas_multiselect', [])
+    
+    # Regular multiselect without label (since we added it above)
+    selected_areas = st.multiselect(
+        "", 
+        options=oecd_areas, 
+        default=default_areas,
+        key="selected_areas_multiselect",
+        label_visibility="collapsed"
+    )
+    
+    # Update select all checkbox state based on multiselect
+    if len(selected_areas) == len(oecd_areas) and not st.session_state.select_all_areas:
+        st.session_state.select_all_areas = True
+        st.rerun()
+    elif len(selected_areas) < len(oecd_areas) and st.session_state.select_all_areas:
+        st.session_state.select_all_areas = False
+        st.rerun()
 
     # Year range filter (use the discrete ranges present)
     def _year_key(label: str) -> int:
@@ -291,28 +418,62 @@ if st.session_state.show_selected and display_indices:
 
     tech_df = sep_df.loc[mask, ["Technology_Name"]].drop_duplicates().reset_index(drop=True)
 
-    # Prepend a checkbox column (default unchecked)
-    tech_df.insert(0, "Select", False)
-
     if not tech_df.empty:
         st.subheader("Technologies")
-        edited_tech_df = st.data_editor(
-            tech_df,
-            use_container_width=False,
-            hide_index=True,
-            key="tech_selector",
-            disabled=["Technology_Name"],
-            on_change=None,
-            column_config={
-                "Select": st.column_config.CheckboxColumn(required=False),
-                "Technology_Name": st.column_config.TextColumn(width="medium")
-            },
-        )
         
-        # Generate Report button (doesn't trigger anything)
+        # Add custom CSS for scrollable container
+        st.markdown("""
+        <style>
+        .scrollable-container {
+            max-height: 300px;
+            overflow-y: auto;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            padding: 0;
+        }
+        </style>
+        """, unsafe_allow_html=True)
+        
+        # Track selected technologies
+        if 'selected_techs' not in st.session_state:
+            st.session_state.selected_techs = {}
+        
+        # Create scrollable container
+        with st.container():
+            st.markdown('<div class="scrollable-container">', unsafe_allow_html=True)
+            
+            # Create compact table with tooltips
+            for idx, row in tech_df.iterrows():
+                tech_name = row['Technology_Name']
+                key = f"tech_{idx}_{hash(tech_name) % 10000}"
+                
+                # Create two columns: narrow for checkbox, wider for name with tooltip
+                cols = st.columns([0.5, 4])
+                
+                with cols[0]:
+                    selected = st.checkbox(
+                        "", 
+                        key=key,
+                        value=st.session_state.selected_techs.get(tech_name, False)
+                    )
+                    st.session_state.selected_techs[tech_name] = selected
+                
+                with cols[1]:
+                    # Display technology name with tooltip
+                    tooltip_html = create_tooltip_html(tech_name)
+                    st.markdown(tooltip_html, unsafe_allow_html=True)
+            
+            st.markdown('</div>', unsafe_allow_html=True)
+        
+        # Add some space before the button
+        st.markdown("<br>", unsafe_allow_html=True)
+        
+        # Generate Report button
         if st.button("Generate Report", key="generate_report", type="primary"):
-            pass  # Button doesn't do anything yet
+            selected_tech_names = [name for name, selected in st.session_state.selected_techs.items() if selected]
+            if selected_tech_names:
+                st.success(f"Report would be generated for: {', '.join(selected_tech_names)}")
+            else:
+                st.warning("Please select at least one technology to generate a report.")
 else:
     st.info("Click on chart bubbles to select specific technologies.")
-
-
